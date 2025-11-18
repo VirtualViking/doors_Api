@@ -1,0 +1,18 @@
+# Bot de Telegram
+python-telegram-bot==21.7
+python-telegram-bot[webhooks]==21.7
+
+# Async HTTP client
+aiohttp==3.11.10
+
+# Base de datos
+aiosqlite==0.20.0
+
+# GPIO para Raspberry Pi (opcional, solo si se usa hardware)
+# RPi.GPIO==0.7.1
+
+# Variables de entorno
+python-dotenv==1.0.1
+
+# Utilidades
+pytz==2024.2
