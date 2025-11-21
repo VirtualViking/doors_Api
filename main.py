@@ -47,7 +47,7 @@ class SlidingDoorBot:
             ],
             [
                 InlineKeyboardButton("📊 Estado", callback_data="status"),
-                InlineKeyboardButton("📜 Historial", callback_data="history")
+                InlineKeyboardButton("📜 Registro_DB", callback_data="history")
             ]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
