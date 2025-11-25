@@ -26,7 +26,7 @@ ALLOWED_USERS = os.getenv('ALLOWED_USER_IDS', '').split(',')
 
 # Credenciales de login
 LOGIN_USERNAME = os.getenv('LOGIN_USERNAME', 'admin')
-LOGIN_PASSWORD = os.getenv('LOGIN_PASSWORD', 'admin123')
+LOGIN_PASSWORD = os.getenv('LOGIN_PASSWORD', 'tendencias')
 
 class SlidingDoorBot:
     def __init__(self):
