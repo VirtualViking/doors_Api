@@ -24,10 +24,16 @@ logger = logging.getLogger(__name__)
 TELEGRAM_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
 ALLOWED_USERS = os.getenv('ALLOWED_USER_IDS', '').split(',')
 
+# Credenciales de login
+LOGIN_USERNAME = os.getenv('LOGIN_USERNAME', 'admin')
+LOGIN_PASSWORD = os.getenv('LOGIN_PASSWORD', 'admin123')
+
 class SlidingDoorBot:
     def __init__(self):
         self.door_controller = DoorController()
         self.db = Database()
+        self.logged_users = {}  # Diccionario para usuarios logueados {user_id: True}
+        self.awaiting_credentials = {}  # Usuarios esperando enviar credenciales
         
     async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Comando /start - Mensaje de bienvenida"""
@@ -40,6 +46,17 @@ class SlidingDoorBot:
             )
             return
         
+        # Verificar si está logueado
+        if not self._is_logged_in(user.id):
+            await update.message.reply_text(
+                f"👋 ¡Hola {user.first_name}!\n\n"
+                "🔐 *Sistema de Control de Puertas*\n\n"
+                "⚠️ Debes iniciar sesión para usar el bot.\n\n"
+                "Usa el comando: /login",
+                parse_mode='Markdown'
+            )
+            return
+        
         keyboard = [
             [
                 InlineKeyboardButton("🚪 Abrir Puerta", callback_data="open_door"),
@@ -47,7 +64,10 @@ class SlidingDoorBot:
             ],
             [
                 InlineKeyboardButton("📊 Estado", callback_data="status"),
-                InlineKeyboardButton("📜 Registro_DB", callback_data="history")
+                InlineKeyboardButton("📜 Registro", callback_data="history")
+            ],
+            [
+                InlineKeyboardButton("🚪 Cerrar Sesión", callback_data="logout")
             ]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
@@ -55,10 +75,90 @@ class SlidingDoorBot:
         await update.message.reply_text(
             f"👋 ¡Hola {user.first_name}!\n\n"
             "🏠 *Sistema de Control de Puertas*\n\n"
+            "✅ Sesión activa\n\n"
             "Selecciona una opción:",
             reply_markup=reply_markup,
             parse_mode='Markdown'
         )
+    
+    async def login(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Comando /login - Iniciar sesión"""
+        user = update.effective_user
+        
+        if not self._is_authorized(user.id):
+            await update.message.reply_text(
+                "❌ No estás autorizado para usar este bot.\n"
+                f"Tu ID: {user.id}"
+            )
+            return
+        
+        # Si ya está logueado
+        if self._is_logged_in(user.id):
+            await update.message.reply_text(
+                "✅ Ya tienes una sesión activa.\n\n"
+                "Usa /start para ver el menú."
+            )
+            return
+        
+        # Marcar que está esperando credenciales
+        self.awaiting_credentials[user.id] = True
+        
+        await update.message.reply_text(
+            "🔐 *Inicio de Sesión*\n\n"
+            "Por favor envía tus credenciales en el formato:\n"
+            "`usuario contraseña`\n\n"
+            "Ejemplo: `admin micontraseña123`",
+            parse_mode='Markdown'
+        )
+        
+        logger.info(f"📝 Usuario {user.first_name} (ID: {user.id}) solicitó login")
+    
+    async def handle_credentials(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Maneja las credenciales enviadas por el usuario"""
+        user = update.effective_user
+        
+        # Solo procesar si está esperando credenciales
+        if user.id not in self.awaiting_credentials:
+            return
+        
+        message_text = update.message.text.strip()
+        parts = message_text.split()
+        
+        if len(parts) != 2:
+            await update.message.reply_text(
+                "❌ Formato incorrecto.\n\n"
+                "Envía: `usuario contraseña`",
+                parse_mode='Markdown'
+            )
+            return
+        
+        username, password = parts[0], parts[1]
+        
+        # Validar credenciales
+        if username == LOGIN_USERNAME and password == LOGIN_PASSWORD:
+            # Login exitoso
+            self.logged_users[user.id] = True
+            del self.awaiting_credentials[user.id]
+            
+            logger.info(f"✅ Usuario {user.first_name} (ID: {user.id}) inició sesión correctamente")
+            
+            await update.message.reply_text(
+                "✅ *Inicio de Sesión Exitoso*\n\n"
+                f"Bienvenido {user.first_name}!\n\n"
+                "Usa /start para ver el menú de control.",
+                parse_mode='Markdown'
+            )
+        else:
+            # Login fallido
+            logger.warning(f"❌ Intento de login fallido - Usuario: {user.first_name} (ID: {user.id}) - Credenciales: {username}/***")
+            
+            await update.message.reply_text(
+                "❌ *Credenciales Incorrectas*\n\n"
+                "Usuario o contraseña inválidos.\n\n"
+                "Intenta nuevamente con /login",
+                parse_mode='Markdown'
+            )
+            del self.awaiting_credentials[user.id]
     
     async def button_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Maneja las pulsaciones de botones"""
@@ -67,6 +167,16 @@ class SlidingDoorBot:
         
         if not self._is_authorized(user.id):
             await query.answer("❌ No autorizado", show_alert=True)
+            return
+        
+        # Verificar login para todas las acciones excepto logout
+        if query.data != "logout" and not self._is_logged_in(user.id):
+            await query.answer()
+            await query.edit_message_text(
+                "⚠️ *Sesión Expirada*\n\n"
+                "Por favor inicia sesión nuevamente con /login",
+                parse_mode='Markdown'
+            )
             return
         
         await query.answer()
@@ -81,12 +191,15 @@ class SlidingDoorBot:
             await self._handle_status(query)
         elif action == "history":
             await self._handle_history(query)
+        elif action == "logout":
+            await self._handle_logout(query, user)
         elif action == "back_menu":
             await self._show_main_menu(query)
     
     async def _handle_open_door(self, query, user):
         """Procesa la apertura de puerta"""
         try:
+            logger.info(f"🚪 Usuario {user.first_name} está abriendo la puerta...")
             await query.edit_message_text("⏳ Abriendo puerta...")
             
             # Ejecutar apertura de puerta
@@ -144,6 +257,7 @@ class SlidingDoorBot:
     async def _handle_close_door(self, query, user):
         """Procesa el cierre de puerta"""
         try:
+            logger.info(f"🔒 Usuario {user.first_name} está cerrando la puerta...")
             await query.edit_message_text("⏳ Cerrando puerta...")
             
             result = await self.door_controller.close_door()
@@ -192,6 +306,7 @@ class SlidingDoorBot:
     
     async def _handle_status(self, query):
         """Muestra el estado actual del sistema"""
+        logger.info("📊 Consultando estado del sistema...")
         status = await self.door_controller.get_status()
         
         door_icon = "🟢" if status['door_open'] else "🔴"
@@ -215,12 +330,13 @@ class SlidingDoorBot:
     
     async def _handle_history(self, query):
         """Muestra el historial de acciones"""
+        logger.info("📜 Consultando historial de acciones...")
         records = self.db.get_recent_actions(limit=10)
         
         if not records:
-            message = "📜 *Historial*\n\nNo hay registros aún."
+            message = "📜 *Registro*\n\nNo hay registros aún."
         else:
-            message = "📜 *Historial de Acciones*\n\n"
+            message = "📜 *Registro de Acciones*\n\n"
             for record in records:
                 icon = "✅" if record['status'] == 'success' else "❌"
                 action_text = "Abrió" if record['action'] == 'open' else "Cerró"
@@ -238,8 +354,23 @@ class SlidingDoorBot:
             parse_mode='Markdown'
         )
     
+    async def _handle_logout(self, query, user):
+        """Cierra la sesión del usuario"""
+        if user.id in self.logged_users:
+            del self.logged_users[user.id]
+            logger.info(f"🚪 Usuario {user.first_name} (ID: {user.id}) cerró sesión")
+        
+        await query.edit_message_text(
+            "🚪 *Sesión Cerrada*\n\n"
+            "Has cerrado sesión exitosamente.\n\n"
+            "Usa /login para volver a iniciar sesión.",
+            parse_mode='Markdown'
+        )
+    
     async def _show_main_menu(self, query):
         """Muestra el menú principal"""
+        user = query.from_user
+        
         keyboard = [
             [
                 InlineKeyboardButton("🚪 Abrir Puerta", callback_data="open_door"),
@@ -247,7 +378,10 @@ class SlidingDoorBot:
             ],
             [
                 InlineKeyboardButton("📊 Estado", callback_data="status"),
-                InlineKeyboardButton("📜 Registro_BD", callback_data="history")
+                InlineKeyboardButton("📜 Registro", callback_data="history")
+            ],
+            [
+                InlineKeyboardButton("🚪 Cerrar Sesión", callback_data="logout")
             ]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
@@ -285,6 +419,10 @@ class SlidingDoorBot:
         if not ALLOWED_USERS or ALLOWED_USERS[0] == '':
             return True  # Si no hay lista, permite todos (desarrollo)
         return str(user_id) in ALLOWED_USERS
+    
+    def _is_logged_in(self, user_id: int) -> bool:
+        """Verifica si el usuario está logueado"""
+        return user_id in self.logged_users
 
 
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -311,10 +449,13 @@ def main():
     
     # Handlers
     application.add_handler(CommandHandler("start", bot.start))
+    application.add_handler(CommandHandler("login", bot.login))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, bot.handle_credentials))
     application.add_handler(CallbackQueryHandler(bot.button_callback))
     application.add_error_handler(error_handler)
     
     logger.info("🤖 Bot iniciado correctamente")
+    logger.info(f"🔐 Credenciales de login configuradas: Usuario='{LOGIN_USERNAME}'")
     
     # Iniciar bot
     application.run_polling(allowed_updates=Update.ALL_TYPES)
